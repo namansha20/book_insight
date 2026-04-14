@@ -64,18 +64,24 @@ def book_recommendations(request, pk):
 def scrape_books_view(request):
     pages = int(request.data.get('pages', 2))
     pages = min(pages, 10)  # cap at 10 pages
-    
+
     try:
         scraped = scraper.scrape_books(max_pages=pages)
-        
+
+        # If scraping returned no results (e.g., no internet), fall back to sample data
+        if not scraped:
+            from .sample_data import SAMPLE_BOOKS
+            scraped = SAMPLE_BOOKS
+            logger.info("Scraping returned no results; using built-in sample data.")
+
         created_count = 0
         updated_count = 0
-        
+
         for book_data in scraped:
             title = book_data.get('title', '').strip()
             if not title:
                 continue
-            
+
             book, created = Book.objects.update_or_create(
                 title=title,
                 defaults={
@@ -89,18 +95,18 @@ def scrape_books_view(request):
                     'genre': book_data.get('genre', ''),
                 }
             )
-            
+
             if created:
                 created_count += 1
             else:
                 updated_count += 1
-            
+
             # Run AI processing
             ai_service.process_book(book)
-            
+
             # Index in RAG
             rag_service.index_book(book)
-        
+
         return Response({
             'message': f'Scraped {len(scraped)} books',
             'created': created_count,
@@ -131,8 +137,9 @@ def ask_question(request):
 
 @api_view(['GET'])
 def get_genres(request):
-    genres = Book.objects.exclude(genre='').values_list('genre', flat=True).distinct()
-    return Response(sorted(list(genres)))
+    genres = Book.objects.exclude(genre='').values_list('genre', flat=True)
+    unique_genres = sorted(set(genres))
+    return Response(unique_genres)
 
 
 @api_view(['GET'])

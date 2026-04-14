@@ -1,10 +1,11 @@
 import numpy as np
 import logging
+from sklearn.feature_extraction.text import HashingVectorizer
 
 logger = logging.getLogger(__name__)
 
-# Lazy load model to avoid slow imports
-_model = None
+# HashingVectorizer: works offline, no model download needed, fixed 512-dim output
+_vectorizer = HashingVectorizer(n_features=512, norm='l2', alternate_sign=False)
 
 GENRES = [
     'Fiction', 'Non-Fiction', 'Mystery', 'Romance', 'Science Fiction',
@@ -14,6 +15,26 @@ GENRES = [
     'Religion', 'Parenting', 'Technology', 'Politics', 'Crime',
     'Sequential Art', 'Psychology'
 ]
+
+# Genre keyword hints used for keyword-based classification
+GENRE_KEYWORDS = {
+    'Mystery': ['mystery', 'detective', 'crime', 'murder', 'investigation', 'clue', 'suspect', 'whodunit'],
+    'Romance': ['romance', 'love', 'heart', 'passion', 'relationship', 'wedding', 'boyfriend', 'girlfriend'],
+    'Science Fiction': ['science fiction', 'sci-fi', 'space', 'alien', 'robot', 'future', 'technology', 'galaxy'],
+    'Fantasy': ['fantasy', 'magic', 'dragon', 'wizard', 'elf', 'quest', 'kingdom', 'sword', 'sorcery'],
+    'Horror': ['horror', 'scary', 'fear', 'ghost', 'haunted', 'terror', 'nightmare', 'vampire'],
+    'Thriller': ['thriller', 'suspense', 'action', 'conspiracy', 'chase', 'spy', 'agent'],
+    'Biography': ['biography', 'memoir', 'autobiography', 'life story', 'true story', 'real life'],
+    'History': ['history', 'historical', 'war', 'ancient', 'century', 'empire', 'revolution'],
+    'Self-Help': ['self-help', 'productivity', 'motivation', 'success', 'habit', 'mindset', 'improve'],
+    'Children': ["children's", 'kids', 'young', 'picture book', 'fairy tale', 'adventure'],
+    'Food': ['food', 'cooking', 'recipe', 'cuisine', 'chef', 'kitchen', 'baking'],
+    'Travel': ['travel', 'journey', 'adventure', 'explore', 'destination', 'world', 'trip'],
+    'Psychology': ['psychology', 'mind', 'behavior', 'mental', 'brain', 'cognitive', 'therapy'],
+    'Business': ['business', 'entrepreneur', 'startup', 'management', 'leadership', 'finance'],
+    'Poetry': ['poetry', 'poem', 'verse', 'lyric', 'stanza', 'rhyme'],
+    'Humor': ['humor', 'funny', 'comedy', 'laugh', 'wit', 'satire', 'joke'],
+}
 
 POSITIVE_WORDS = {
     'excellent', 'great', 'amazing', 'wonderful', 'fantastic', 'love', 'best',
@@ -31,17 +52,12 @@ NEGATIVE_WORDS = {
 }
 
 
-def get_model():
-    global _model
-    if _model is None:
-        try:
-            from sentence_transformers import SentenceTransformer
-            _model = SentenceTransformer('all-MiniLM-L6-v2')
-            logger.info("Loaded sentence-transformers model")
-        except Exception as e:
-            logger.error(f"Could not load sentence-transformers model: {e}")
-            _model = None
-    return _model
+def get_embedding(text):
+    """Get a fixed-size embedding using hashing vectorizer (offline, no model download needed)"""
+    if not text:
+        return [0.0] * 512
+    vec = _vectorizer.transform([text])
+    return vec.toarray()[0].tolist()
 
 
 def cosine_similarity(a, b):
@@ -66,7 +82,7 @@ def generate_summary(book):
 
 
 def classify_genre(book):
-    """Classify genre using sentence-transformers or fallback"""
+    """Classify genre using keyword matching or scraped category"""
     # If book already has a genre from scraping, keep it but normalize
     if book.genre:
         scraped_genre = book.genre.strip()
@@ -75,22 +91,18 @@ def classify_genre(book):
             if g.lower() in scraped_genre.lower() or scraped_genre.lower() in g.lower():
                 return g
         return scraped_genre
-    
-    # Try ML-based classification
-    model = get_model()
-    if model is not None:
-        try:
-            text = f"{book.title}. {book.description[:300]}" if book.description else book.title
-            text_embedding = model.encode([text])[0]
-            genre_embeddings = model.encode(GENRES)
-            
-            similarities = [cosine_similarity(text_embedding, ge) for ge in genre_embeddings]
-            best_idx = int(np.argmax(similarities))
-            return GENRES[best_idx]
-        except Exception as e:
-            logger.error(f"Genre classification error: {e}")
-    
-    return 'Fiction'
+
+    # Keyword-based classification using genre hints
+    text = f"{book.title} {book.description or ''}".lower()
+    best_genre = 'Fiction'
+    best_score = 0
+    for genre, keywords in GENRE_KEYWORDS.items():
+        score = sum(1 for kw in keywords if kw in text)
+        if score > best_score:
+            best_score = score
+            best_genre = genre
+
+    return best_genre
 
 
 def analyze_sentiment(text):

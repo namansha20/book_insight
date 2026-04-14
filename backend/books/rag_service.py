@@ -1,6 +1,7 @@
 import logging
 import os
 import numpy as np
+from sklearn.feature_extraction.text import HashingVectorizer
 
 logger = logging.getLogger(__name__)
 
@@ -8,18 +9,16 @@ CHROMA_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'chroma_d
 COLLECTION_NAME = "book_chunks"
 
 _chroma_client = None
-_embed_model = None
+# Offline vectorizer: 512-dim hashing, consistent across calls without fitting
+_vectorizer = HashingVectorizer(n_features=512, norm='l2', alternate_sign=False)
 
 
-def get_embed_model():
-    global _embed_model
-    if _embed_model is None:
-        try:
-            from sentence_transformers import SentenceTransformer
-            _embed_model = SentenceTransformer('all-MiniLM-L6-v2')
-        except Exception as e:
-            logger.error(f"Could not load embedding model: {e}")
-    return _embed_model
+def get_embedding(text):
+    """Compute a fixed-size embedding using hashing (offline, no model download)"""
+    if not text:
+        return [0.0] * 512
+    vec = _vectorizer.transform([text])
+    return vec.toarray()[0].tolist()
 
 
 def get_chroma_client():
@@ -66,10 +65,9 @@ def chunk_text(text, chunk_size=200, overlap=30):
 
 def index_book(book):
     """Index a book in ChromaDB"""
-    model = get_embed_model()
     collection = get_collection()
-    if model is None or collection is None:
-        logger.warning("Cannot index book: model or collection unavailable")
+    if collection is None:
+        logger.warning("Cannot index book: collection unavailable")
         return False
     
     try:
@@ -101,7 +99,7 @@ def index_book(book):
             pass
         
         # Generate embeddings
-        embeddings = model.encode(chunks).tolist()
+        embeddings = [get_embedding(chunk) for chunk in chunks]
         
         ids = [f"book_{book.id}_chunk_{i}" for i in range(len(chunks))]
         metadatas = [{
@@ -154,16 +152,15 @@ def generate_answer(question, context_chunks, book_titles):
 
 def query_rag(question, top_k=5, book_id=None):
     """Query the RAG pipeline"""
-    model = get_embed_model()
     collection = get_collection()
-    
+
     default_result = {
         'answer': 'RAG service is not available. Please ensure books are indexed first.',
         'sources': [],
         'context': []
     }
-    
-    if model is None or collection is None:
+
+    if collection is None:
         return default_result
     
     try:
@@ -177,7 +174,7 @@ def query_rag(question, top_k=5, book_id=None):
             }
         
         # Embed the question
-        question_embedding = model.encode([question])[0].tolist()
+        question_embedding = get_embedding(question)
         
         # Build query filters
         where_filter = None
